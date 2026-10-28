@@ -5,6 +5,14 @@ import neuro_geometry
 
 def test_public_api() -> None:
     assert set(neuro_geometry.__all__) == {
-        "Contour", "Line", "LineDirection", "Point", "Quadrangle", "Rectangle", "Triangle"
+        "Line",
+        "LineDirection",
+        "Point",
+        "Quadrangle",
+        "Rectangle",
+        "Triangle",
+        "batch",
+        "round_half_up",
+        "to_contour",
     }
-    assert neuro_geometry.__version__
+    assert neuro_geometry.__version__ == "0.2.0"

@@ -1,77 +1,110 @@
-""" Точка с целочисленными координатами. """
+""" Точка на плоскости изображения. """
 
 from __future__ import annotations
 
-import builtins
-from collections.abc import Sequence
-from math import sqrt
-from numbers import Integral, Real
-from typing import SupportsInt, TypeAlias
+import math
+from collections.abc import Iterator, Sequence
 
-# float, int, numpy-скаляры и всё, что приводится через int()
-Number: TypeAlias = SupportsInt
+from ._rounding import round_half_up
 
 
 class Point:
-    """ Точка на изображении: координаты приводятся к int (дробные округляются через round(), остальные — int()). """
+    """
+    Изменяемая точка с координатами float. Ось Y направлена вниз (координаты изображения).
+
+    Изменение на месте: shift(), set(), операторы += и -=.
+    Новый объект: shifted(), copy(), операторы +, -, *.
+    Точка изменяемая, поэтому не хешируется (её нельзя класть в set или использовать как ключ dict).
+    """
 
     __slots__ = ("x", "y")
 
-    x: int
-    y: int
+    x: float
+    y: float
 
-    def __init__(self, x: Number | Sequence[Number], y: Number | None = None) -> None:
-        if isinstance(x, (list, tuple)):
-            if y is not None:
-                raise TypeError("Point: 'y' must be omitted when 'x' is a sequence")
-            if len(x) != 2:
-                raise ValueError(f"Point: sequence must have 2 items, got {len(x)}")
-            raw_x, raw_y = x[0], x[1]
-        else:
-            if y is None:
-                raise TypeError("Point: 'y' is required when 'x' is a number")
-            raw_x, raw_y = x, y
+    def __init__(self, x: float, y: float) -> None:
+        self.x = float(x)
+        self.y = float(y)
 
-        self.x = self._to_int(raw_x, "x")
-        self.y = self._to_int(raw_y, "y")
+    @classmethod
+    def from_seq(cls, xy: Sequence[float]) -> Point:
+        """ Точка из пары [x, y] / (x, y). """
+        if len(xy) != 2:
+            raise ValueError(f"Point requires 2 coordinates, got {len(xy)}")
+        return cls(xy[0], xy[1])
 
-    @staticmethod
-    def _to_int(value: Number, name: str) -> int:
-        """ Приводит координату к int: дробные (в т.ч. numpy.float32) округляются, остальное — через int(). """
-        if isinstance(value, Real) and not isinstance(value, Integral):
-            return round(float(value))
-        try:
-            return int(value)
-        except (TypeError, ValueError) as e:
-            raise TypeError(f"Point: can't convert {name}={value!r} to int") from e
+    def copy(self) -> Point:
+        """ Независимая копия. """
+        return Point(self.x, self.y)
 
-    def __add__(self, point: Point) -> Point:
-        """ (x1 + x2, y1 + y2) """
-        return Point(self.x + point.x, self.y + point.y)
+    def set(self, x: float, y: float) -> None:
+        """ Задаёт координаты на месте. """
+        self.x = float(x)
+        self.y = float(y)
 
-    def __sub__(self, point: Point) -> Point:
-        """ (x1 - x2, y1 - y2) """
-        return Point(self.x - point.x, self.y - point.y)
+    def shift(self, dx: float, dy: float) -> None:
+        """ Сдвигает точку на месте. """
+        self.x += dx
+        self.y += dy
+
+    def shifted(self, dx: float, dy: float) -> Point:
+        """ Новая точка, сдвинутая на (dx, dy). """
+        return Point(self.x + dx, self.y + dy)
+
+    def distance_to(self, other: Point) -> float:
+        """ Евклидово расстояние. """
+        return math.hypot(self.x - other.x, self.y - other.y)
+
+    def isclose(self, other: Point, abs_tol: float = 1e-9) -> bool:
+        """ Совпадение координат с допуском. """
+        return abs(self.x - other.x) <= abs_tol and abs(self.y - other.y) <= abs_tol
+
+    def to_tuple(self) -> tuple[float, float]:
+        """ (x, y) """
+        return self.x, self.y
+
+    def to_int_tuple(self) -> tuple[int, int]:
+        """ (x, y) в пикселях, округление половины вверх — для функций OpenCV. """
+        return round_half_up(self.x), round_half_up(self.y)
+
+    def to_list(self) -> list[float]:
+        """ [x, y] """
+        return [self.x, self.y]
+
+    def __add__(self, other: Point) -> Point:
+        return Point(self.x + other.x, self.y + other.y)
+
+    def __sub__(self, other: Point) -> Point:
+        return Point(self.x - other.x, self.y - other.y)
+
+    def __iadd__(self, other: Point) -> Point:
+        self.x += other.x
+        self.y += other.y
+        return self
+
+    def __isub__(self, other: Point) -> Point:
+        self.x -= other.x
+        self.y -= other.y
+        return self
+
+    def __mul__(self, k: float) -> Point:
+        return Point(self.x * k, self.y * k)
+
+    __rmul__ = __mul__
+
+    def __neg__(self) -> Point:
+        return Point(-self.x, -self.y)
+
+    def __iter__(self) -> Iterator[float]:
+        yield self.x
+        yield self.y
 
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, Point):
             return NotImplemented
         return self.x == other.x and self.y == other.y
 
-    def __hash__(self) -> int:
-        return hash((self.x, self.y))
+    __hash__ = None  # type: ignore[assignment]
 
     def __repr__(self) -> str:
-        return f"Point({self.x}, {self.y})"
-
-    def distance_to(self, point: Point) -> int:
-        """ Евклидово расстояние до точки, округлённое до int. """
-        return round(sqrt((self.x - point.x) ** 2 + (self.y - point.y) ** 2))
-
-    def tuple(self) -> builtins.tuple[int, int]:
-        """ (x, y) """
-        return self.x, self.y
-
-    def list(self) -> builtins.list[int]:
-        """ [x, y] """
-        return [self.x, self.y]
+        return f"Point({self.x:g}, {self.y:g})"

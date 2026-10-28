@@ -1,260 +1,333 @@
-""" Прямоугольник: по осям (bounding rect) или повёрнутый (минимальной площади, через OpenCV). """
+""" Прямоугольник, в том числе повёрнутый. """
 
 from __future__ import annotations
 
 import math
-from collections.abc import Sequence
 
 import numpy as np
 import numpy.typing as npt
 
-from ._box_utils import bounding_rect_xywh, box_to_coords
 from ._cv import min_area_rect
-from ._polygon import shoelace_area
-from .contour import Contour
+from ._rounding import readonly, round_half_up, to_contour
 from .point import Point
-from .types import Angle, Area, CvContour, Height, IntCoords, Width
+from .types import Coords, CvContour, FloatArray
 
 
 class Rectangle:
     """
-    Прямоугольник, описанный вокруг контура.
+    Прямоугольник: центр (cx, cy), размеры (width, height) и угол поворота angle в градусах.
 
-    rotated=False — прямоугольник по осям, как cv2.boundingRect (границы включительные: w = xmax - xmin + 1).
-    rotated=True — прямоугольник минимальной площади, как cv2.minAreaRect + cv2.boxPoints;
-    требует OpenCV (`pip install neuro-geometry[cv]`). Углы lbp/ltp/rtp/rbp берутся из cv2.boxPoints
-    в его порядке, поэтому для повёрнутого прямоугольника их имена условны.
+    Угол нормализуется в (-45, 45]: width — сторона, более близкая к горизонтали, height — к вертикали.
+    Углы lbp, ltp, rtp, rbp и середины сторон заданы в системе самого прямоугольника,
+    поэтому их имена корректны и для повёрнутого прямоугольника. Ось Y направлена вниз.
+
+    Изменение на месте (возвращают None): shift(), shift_along_axes(), scale(), decrease(), increase(),
+    set_center(), сеттеры width, height, angle.
+    Новый объект: shifted(), shifted_along_axes(), scaled(), decreased(), increased(), copy().
+    Вершины и контур считаются лениво и кэшируются; shift() сдвигает кэш на месте.
     """
 
-    _contour: CvContour  # контур (4, 1, 2) int32
-    _coords: IntCoords  # [lbp, ltp, rtp, rbp]
+    __slots__ = ("_angle", "_contour", "_corners", "_cx", "_cy", "_h", "_w")
 
-    _lbp: Point  # левая нижняя точка
-    _ltp: Point  # левая верхняя точка
-    _rtp: Point  # правая верхняя точка
-    _rbp: Point  # правая нижняя точка
+    def __init__(self, cx: float, cy: float, width: float, height: float, angle: float = 0.0) -> None:
+        if width < 0 or height < 0:
+            raise ValueError(f"Rectangle size must be non-negative, got {width}x{height}")
+        self._cx, self._cy = float(cx), float(cy)
+        self._w, self._h = float(width), float(height)
+        self._angle = float(angle)
+        self._corners: FloatArray | None = None
+        self._contour: CvContour | None = None
+        if self._angle != 0.0:
+            self._normalize_angle()
 
-    _cp: Point  # центральная точка
-    _lcp: Point  # середина левой стороны
-    _rcp: Point  # середина правой стороны
-    _tcp: Point  # середина верхней стороны
-    _bcp: Point  # середина нижней стороны
+    # --- конструкторы ---
 
-    _area: Area
-    _width: Width
-    _height: Height
-    _angle: Angle  # угол наклона относительно оси X (cv2.minAreaRect), 0 для rotated=False
-    _rotated: bool
+    @classmethod
+    def from_xywh(cls, x: float, y: float, width: float, height: float) -> Rectangle:
+        """ По левому верхнему углу и размерам, например из cv2.boundingRect. """
+        return cls(x + width / 2, y + height / 2, width, height)
 
-    def __init__(self, contour_or_box: CvContour | Sequence[float] | Sequence[Sequence[float]], rotated: bool = False):
+    @classmethod
+    def from_box(cls, x1: float, y1: float, x2: float, y2: float) -> Rectangle:
+        """ По двум противоположным углам (порядок не важен). """
+        left, right = min(x1, x2), max(x1, x2)
+        top, bottom = min(y1, y2), max(y1, y2)
+        return cls((left + right) / 2, (top + bottom) / 2, right - left, bottom - top)
+
+    @classmethod
+    def from_points(cls, points: npt.ArrayLike, rotated: bool = False) -> Rectangle:
         """
-        contour_or_box — контур OpenCV (N, 1, 2) / массив (N, 2), либо список вида
-        [x1, y1, x2, y2, ...] или [[x1, y1], [x2, y2], ...].
+        Описанный прямоугольник вокруг точек: (N, 2), (N, 1, 2) или список пар.
+        rotated=False — по осям, width = xmax - xmin (геометрическая ширина, без +1 как у cv2.boundingRect).
+        rotated=True — минимальной площади через cv2.minAreaRect (нужен OpenCV).
         """
-        if isinstance(contour_or_box, np.ndarray):
-            points: npt.NDArray[np.generic] = contour_or_box.reshape(-1, 2)
-        else:
-            points = Contour.get_from_coords(box_to_coords(contour_or_box)).reshape(-1, 2)
-        if points.shape[0] < 2:
-            raise ValueError(f"Rectangle requires at least 2 points, got {points.shape[0]}")
+        pts = np.asarray(points, dtype=np.float64).reshape(-1, 2)
+        if pts.shape[0] == 0:
+            raise ValueError("Rectangle requires at least 1 point")
+        if not rotated:
+            (xmin, ymin), (xmax, ymax) = pts.min(axis=0), pts.max(axis=0)
+            return cls.from_box(float(xmin), float(ymin), float(xmax), float(ymax))
 
-        if rotated:
-            ((cx, cy), (size_w, size_h), angle), box = min_area_rect(points)
-            if angle > 45 or angle < -45:
-                width, height = round(size_h), round(size_w)
-            else:
-                width, height = round(size_w), round(size_h)
-            lbp, ltp, rtp, rbp = (Point(float(x), float(y)) for x, y in box)
-            self._assign(lbp, ltp, rtp, rbp, Point(cx, cy), width, height, angle, rotated=True)
-        else:
-            x, y, width, height = bounding_rect_xywh(points)
-            ltp = Point(x, y)
-            self._assign(
-                lbp=Point(x, y + height),
-                ltp=ltp,
-                rtp=Point(x + width, y),
-                rbp=Point(x + width, y + height),
-                cp=Point(x + round(width / 2), y + round(height / 2)),
-                width=width,
-                height=height,
-                angle=0.0,
-                rotated=False,
-            )
+        (cx, cy), (w, h), angle = min_area_rect(pts)
+        return cls(cx, cy, w, h, angle)
 
-    def _assign(
-        self,
-        lbp: Point,
-        ltp: Point,
-        rtp: Point,
-        rbp: Point,
-        cp: Point,
-        width: Width,
-        height: Height,
-        angle: Angle,
-        rotated: bool,
-    ) -> None:
-        """ Устанавливает углы и пересчитывает все производные величины. """
-        self._lbp, self._ltp, self._rtp, self._rbp = lbp, ltp, rtp, rbp
-        self._cp = cp
-        self._width = width
-        self._height = height
+    def _normalize_angle(self) -> None:
+        """ Приводит угол в (-45, 45], меняя местами стороны при повороте на 90°. """
+        angle = math.remainder(self._angle, 180.0)  # [-90, 90]
+        if angle > 45:
+            angle -= 90
+            self._w, self._h = self._h, self._w
+        elif angle <= -45:
+            angle += 90
+            self._w, self._h = self._h, self._w
         self._angle = angle
-        self._rotated = rotated
+        self._invalidate()
 
-        self._coords = [lbp.list(), ltp.list(), rtp.list(), rbp.list()]
-        self._contour = Contour.get_from_coords(self._coords)
-        # Середины сторон считаются от ltp по осям — для повёрнутого прямоугольника это приближение
-        half_height = round(height / 2)
-        self._lcp = Point(ltp.x, ltp.y + half_height)
-        self._rcp = Point(ltp.x + width, ltp.y + half_height)
-        self._tcp = Point(cp.x, ltp.y)
-        self._bcp = Point(cp.x, lbp.y)
-        self._area = shoelace_area([lbp, ltp, rtp, rbp])
+    def copy(self) -> Rectangle:
+        """ Независимая копия (кэш не копируется). """
+        return Rectangle(self._cx, self._cy, self._w, self._h, self._angle)
 
-    def _copy_with(
-        self, lbp: Point, ltp: Point, rtp: Point, rbp: Point, cp: Point, width: Width, height: Height
-    ) -> Rectangle:
-        """ Новый прямоугольник с теми же углом и типом, без повторного вписывания в контур. """
-        rect = Rectangle.__new__(Rectangle)
-        rect._assign(lbp, ltp, rtp, rbp, cp, width, height, self._angle, self._rotated)
-        return rect
+    # --- состояние ---
+
+    def _invalidate(self) -> None:
+        self._corners = None
+        self._contour = None
 
     @property
-    def area(self) -> Area:
-        """ Площадь по вершинам. """
-        return self._area
+    def cx(self) -> float:
+        return self._cx
 
     @property
-    def contour(self) -> CvContour:
-        """ Контур (4, 1, 2) int32 из вершин [lbp, ltp, rtp, rbp]. """
-        return self._contour
+    def cy(self) -> float:
+        return self._cy
 
     @property
-    def angle(self) -> Angle:
-        """ Угол из cv2.minAreaRect; 0 для прямоугольника по осям. """
+    def width(self) -> float:
+        return self._w
+
+    @width.setter
+    def width(self, value: float) -> None:
+        if value < 0:
+            raise ValueError(f"width must be non-negative, got {value}")
+        self._w = float(value)
+        self._invalidate()
+
+    @property
+    def height(self) -> float:
+        return self._h
+
+    @height.setter
+    def height(self, value: float) -> None:
+        if value < 0:
+            raise ValueError(f"height must be non-negative, got {value}")
+        self._h = float(value)
+        self._invalidate()
+
+    @property
+    def angle(self) -> float:
+        """ Угол поворота в градусах; положительный — по часовой стрелке на изображении. """
         return self._angle
 
-    @property
-    def rotated(self) -> bool:
-        """ True, если прямоугольник построен как повёрнутый (minAreaRect). """
-        return self._rotated
+    @angle.setter
+    def angle(self, value: float) -> None:
+        self._angle = float(value)
+        self._normalize_angle()
 
     @property
-    def ltp(self) -> Point:
-        """ Левая верхняя точка. """
-        return self._ltp
+    def is_axis_aligned(self) -> bool:
+        return self._angle == 0.0
 
-    @property
-    def lbp(self) -> Point:
-        """ Левая нижняя точка. """
-        return self._lbp
+    def set_center(self, cx: float, cy: float) -> None:
+        """ Переносит центр на месте. """
+        self.shift(cx - self._cx, cy - self._cy)
 
-    @property
-    def rtp(self) -> Point:
-        """ Правая верхняя точка. """
-        return self._rtp
+    # --- производные величины ---
 
-    @property
-    def rbp(self) -> Point:
-        """ Правая нижняя точка. """
-        return self._rbp
+    def _local(self, u: float, v: float) -> tuple[float, float]:
+        """ Точка (u, v) из системы прямоугольника (центр в 0) в координаты изображения. """
+        if self._angle == 0.0:
+            return self._cx + u, self._cy + v
+        rad = math.radians(self._angle)
+        cos, sin = math.cos(rad), math.sin(rad)
+        return self._cx + u * cos - v * sin, self._cy + u * sin + v * cos
+
+    def _local_point(self, u: float, v: float) -> Point:
+        x, y = self._local(u, v)
+        return Point(x, y)
 
     @property
     def cp(self) -> Point:
-        """ Центральная точка. """
-        return self._cp
+        """ Центр. """
+        return Point(self._cx, self._cy)
+
+    @property
+    def lbp(self) -> Point:
+        """ Левая нижняя вершина. """
+        return self._local_point(-self._w / 2, self._h / 2)
+
+    @property
+    def ltp(self) -> Point:
+        """ Левая верхняя вершина. """
+        return self._local_point(-self._w / 2, -self._h / 2)
+
+    @property
+    def rtp(self) -> Point:
+        """ Правая верхняя вершина. """
+        return self._local_point(self._w / 2, -self._h / 2)
+
+    @property
+    def rbp(self) -> Point:
+        """ Правая нижняя вершина. """
+        return self._local_point(self._w / 2, self._h / 2)
 
     @property
     def lcp(self) -> Point:
         """ Середина левой стороны. """
-        return self._lcp
+        return self._local_point(-self._w / 2, 0.0)
 
     @property
     def rcp(self) -> Point:
         """ Середина правой стороны. """
-        return self._rcp
+        return self._local_point(self._w / 2, 0.0)
 
     @property
     def tcp(self) -> Point:
         """ Середина верхней стороны. """
-        return self._tcp
+        return self._local_point(0.0, -self._h / 2)
 
     @property
     def bcp(self) -> Point:
         """ Середина нижней стороны. """
-        return self._bcp
+        return self._local_point(0.0, self._h / 2)
 
     @property
-    def width(self) -> Width:
-        return self._width
+    def area(self) -> float:
+        return self._w * self._h
+
+    def _corners_array(self) -> FloatArray:
+        if self._corners is None:
+            hw, hh = self._w / 2, self._h / 2
+            self._corners = np.array(
+                [self._local(-hw, hh), self._local(-hw, -hh), self._local(hw, -hh), self._local(hw, hh)],
+                dtype=np.float64,
+            )
+        return self._corners
 
     @property
-    def height(self) -> Height:
-        return self._height
+    def corners(self) -> FloatArray:
+        """ Вершины [lbp, ltp, rtp, rbp] массивом (4, 2) float64, только для чтения. """
+        return readonly(self._corners_array())
 
     @property
-    def coords(self) -> IntCoords:
-        """ [lbp, ltp, rtp, rbp] """
-        return self._coords
+    def coords(self) -> Coords:
+        """ Вершины [lbp, ltp, rtp, rbp] списком. """
+        coords: Coords = self._corners_array().tolist()
+        return coords
 
-    def shift(self, shift_point: Point) -> None:
-        """ Сдвигает прямоугольник на вектор shift_point; все производные точки пересчитываются. """
-        self._assign(
-            self._lbp + shift_point,
-            self._ltp + shift_point,
-            self._rtp + shift_point,
-            self._rbp + shift_point,
-            self._cp + shift_point,
-            self._width,
-            self._height,
-            self._angle,
-            self._rotated,
-        )
+    @property
+    def contour(self) -> CvContour:
+        """ Контур OpenCV (4, 1, 2) int32 из вершин [lbp, ltp, rtp, rbp], только для чтения. """
+        if self._contour is None:
+            self._contour = to_contour(self._corners_array())
+        return readonly(self._contour)
 
-    def shift_given_angle(self, shift: int) -> Rectangle:
-        """
-        Параллельный прямоугольник, сдвинутый на shift пикселей вдоль оси наклона:
-        при angle < 45 — вдоль ширины, иначе — перпендикулярно (вдоль высоты).
-        """
-        angle_rad = math.radians(self._angle)
-        if self._angle < 45:
-            vector = Point(shift * math.cos(angle_rad), shift * math.sin(angle_rad))
-        else:
-            vector = Point(shift * math.sin(angle_rad), -shift * math.cos(angle_rad))
-        return self._copy_with(
-            self._lbp + vector,
-            self._ltp + vector,
-            self._rtp + vector,
-            self._rbp + vector,
-            self._cp + vector,
-            self._width,
-            self._height,
-        )
+    def bounding_box(self) -> tuple[float, float, float, float]:
+        """ Описанный прямоугольник по осям: (x1, y1, x2, y2). """
+        if self._angle == 0.0:
+            hw, hh = self._w / 2, self._h / 2
+            return self._cx - hw, self._cy - hh, self._cx + hw, self._cy + hh
+        corners = self._corners_array()
+        (x1, y1), (x2, y2) = corners.min(axis=0), corners.max(axis=0)
+        return float(x1), float(y1), float(x2), float(y2)
 
-    def decrease(self, width_percent: float, height_percent: float) -> Rectangle:
-        """
-        Уменьшенный прямоугольник с тем же центром и углом: каждая сторона сдвигается внутрь
-        на width_percent % ширины и height_percent % высоты. Текущий прямоугольник не меняется.
-        """
-        width_k = 1 - 2 * width_percent / 100
-        height_k = 1 - 2 * height_percent / 100
+    def to_int_box(self) -> tuple[int, int, int, int]:
+        """ bounding_box() в пикселях (округление половины вверх) — например, для вырезки image[y1:y2, x1:x2]. """
+        x1, y1, x2, y2 = self.bounding_box()
+        return round_half_up(x1), round_half_up(y1), round_half_up(x2), round_half_up(y2)
+
+    def contains(self, point: Point, eps: float = 1e-9) -> bool:
+        """ Лежит ли точка внутри прямоугольника или на границе. """
+        dx, dy = point.x - self._cx, point.y - self._cy
+        if self._angle != 0.0:
+            rad = math.radians(self._angle)
+            cos, sin = math.cos(rad), math.sin(rad)
+            dx, dy = dx * cos + dy * sin, -dx * sin + dy * cos
+        return abs(dx) <= self._w / 2 + eps and abs(dy) <= self._h / 2 + eps
+
+    # --- изменение на месте ---
+
+    def shift(self, dx: float, dy: float) -> None:
+        """ Сдвигает прямоугольник на месте. """
+        self._cx += dx
+        self._cy += dy
+        if self._corners is not None:
+            self._corners[:, 0] += dx
+            self._corners[:, 1] += dy
+        self._contour = None
+
+    def shift_along_axes(self, along_width: float, along_height: float = 0.0) -> None:
+        """ Сдвигает на месте вдоль собственных осей прямоугольника (вдоль ширины и вдоль высоты). """
+        dx, dy = self._local(along_width, along_height)
+        self.shift(dx - self._cx, dy - self._cy)
+
+    def scale(self, width_k: float, height_k: float | None = None) -> None:
+        """ Масштабирует размеры относительно центра на месте. """
+        height_k = width_k if height_k is None else height_k
         if width_k < 0 or height_k < 0:
-            raise ValueError("Decrease percent must not exceed 50")
+            raise ValueError("Scale factors must be non-negative")
+        self._w *= width_k
+        self._h *= height_k
+        self._invalidate()
 
-        corners = np.array(self._coords, dtype=np.float64)
-        center = corners.mean(axis=0)
-        # Оси прямоугольника: lbp→rbp (ширина) и lbp→ltp (высота)
-        axis_w = corners[3] - corners[0]
-        axis_h = corners[1] - corners[0]
-        axis_w /= np.linalg.norm(axis_w) or 1.0
-        axis_h /= np.linalg.norm(axis_h) or 1.0
-        offsets = corners - center
-        scaled = (
-            center
-            + np.outer(offsets @ axis_w * width_k, axis_w)
-            + np.outer(offsets @ axis_h * height_k, axis_h)
+    def decrease(self, width_percent: float, height_percent: float | None = None) -> None:
+        """ Уменьшает на месте: каждая сторона сдвигается внутрь на заданный процент ширины/высоты. """
+        height_percent = width_percent if height_percent is None else height_percent
+        if width_percent > 50 or height_percent > 50:
+            raise ValueError("Decrease percent must not exceed 50")
+        self.scale(1 - 2 * width_percent / 100, 1 - 2 * height_percent / 100)
+
+    def increase(self, width_percent: float, height_percent: float | None = None) -> None:
+        """ Увеличивает на месте: каждая сторона сдвигается наружу на заданный процент ширины/высоты. """
+        height_percent = width_percent if height_percent is None else height_percent
+        self.scale(1 + 2 * width_percent / 100, 1 + 2 * height_percent / 100)
+
+    # --- новый объект ---
+
+    def shifted(self, dx: float, dy: float) -> Rectangle:
+        """ Новый прямоугольник, сдвинутый на (dx, dy). """
+        return Rectangle(self._cx + dx, self._cy + dy, self._w, self._h, self._angle)
+
+    def shifted_along_axes(self, along_width: float, along_height: float = 0.0) -> Rectangle:
+        """ Новый прямоугольник, сдвинутый вдоль собственных осей. """
+        cx, cy = self._local(along_width, along_height)
+        return Rectangle(cx, cy, self._w, self._h, self._angle)
+
+    def scaled(self, width_k: float, height_k: float | None = None) -> Rectangle:
+        rect = self.copy()
+        rect.scale(width_k, height_k)
+        return rect
+
+    def decreased(self, width_percent: float, height_percent: float | None = None) -> Rectangle:
+        rect = self.copy()
+        rect.decrease(width_percent, height_percent)
+        return rect
+
+    def increased(self, width_percent: float, height_percent: float | None = None) -> Rectangle:
+        rect = self.copy()
+        rect.increase(width_percent, height_percent)
+        return rect
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, Rectangle):
+            return NotImplemented
+        return (self._cx, self._cy, self._w, self._h, self._angle) == (
+            other._cx, other._cy, other._w, other._h, other._angle
         )
-        lbp, ltp, rtp, rbp = (Point(float(x), float(y)) for x, y in scaled)
-        return self._copy_with(
-            lbp, ltp, rtp, rbp, self._cp, round(self._width * width_k), round(self._height * height_k)
+
+    __hash__ = None  # type: ignore[assignment]
+
+    def __repr__(self) -> str:
+        return (
+            f"Rectangle(cx={self._cx:g}, cy={self._cy:g}, width={self._w:g}, height={self._h:g}, "
+            f"angle={self._angle:g})"
         )

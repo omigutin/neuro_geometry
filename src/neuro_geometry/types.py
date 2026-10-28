@@ -1,4 +1,4 @@
-""" Псевдонимы типов, совместимые с `pc_common.types.simple_type` из production_counters. """
+""" Псевдонимы типов пакета. """
 
 from __future__ import annotations
 
@@ -8,16 +8,11 @@ from typing import TypeAlias
 import numpy as np
 import numpy.typing as npt
 
-Angle: TypeAlias = float
-Area: TypeAlias = float
-# Список пар [x, y]
+# Координаты на входе: последовательность пар [x, y] или массив numpy формы (N, 2) / (N, 1, 2)
+CoordsLike: TypeAlias = Sequence[Sequence[float]] | npt.NDArray[np.generic]
+# Координаты на выходе: список пар [x, y]
 Coords: TypeAlias = list[list[float]]
-# Координаты на входе: любая последовательность пар [x, y]
-CoordsLike: TypeAlias = Sequence[Sequence[float]]
-# Координаты на выходе: вершины с целочисленными координатами
-IntCoords: TypeAlias = list[list[int]]
-# Контур в формате OpenCV: массив формы (N, 1, 2), dtype int32
+# Массив вершин формы (N, 2), float64
+FloatArray: TypeAlias = npt.NDArray[np.float64]
+# Контур в формате OpenCV: (N, 1, 2), int32
 CvContour: TypeAlias = npt.NDArray[np.int32]
-Distance: TypeAlias = int
-Height: TypeAlias = int
-Width: TypeAlias = int

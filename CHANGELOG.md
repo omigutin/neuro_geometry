@@ -5,38 +5,44 @@
 
 ## [0.2.0] — 2026-10-28
 
-Репозиторий перенесён на https://github.com/omigutin/neuro_geometry.
+Библиотека переписана. Репозиторий перенесён на https://github.com/omigutin/neuro_geometry.
+API несовместим с 0.1.x и с `pc_geometric_shapes` — таблица замен в README.
 
 ### Изменено (несовместимо)
 
 - Пакет переименован: `neurogeometry` → `neuro_geometry`, дистрибутив — `neuro-geometry`.
-- `Rectangle(rotated=True)` снова использует OpenCV (`cv2.minAreaRect` + `cv2.boxPoints`).
-  OpenCV — необязательная зависимость: extra `[cv]`. Без него `rotated=True` бросает `ImportError`
-  с подсказкой. Собственный numpy-порт `_rotcalipers` удалён: результаты расходились с OpenCV 4.5+
-  (другой диапазон угла и порядок вершин), а вызов был примерно в 2400 раз медленнее.
-- `Quadrangle.area` и `Rectangle.area` считаются по формуле шнурования. Раньше использовалась
-  формула Брахмагупты, которая точна только для вписанных четырёхугольников.
-- Ошибки валидации — `ValueError`/`TypeError` с сообщениями на английском вместо голого `Exception`.
+- Координаты хранятся во float без промежуточного округления. Перевод в пиксели явный:
+  `to_int_tuple()`, `to_int_box()`, `contour`, `to_contour()`; округление половины вверх.
+- Единое правило изменения: `shift()`/`scale()`/`decrease()`/`increase()` меняют объект на месте и возвращают `None`,
+  `shifted()`/`scaled()`/`decreased()`/`increased()`/`copy()` возвращают новый.
+- `Point(x, y)` — float; `Point.from_seq()` вместо `Point((x, y))`; `to_tuple()`/`to_list()` вместо `tuple()`/`list()`;
+  `distance_to()` возвращает float. Точки сравниваются по координатам и не хешируются.
+- `Line(x1, y1, x2, y2)`, `from_points()`, `from_coords()`; порядок концов сохраняется; `tp`/`bp`/`lp`/`rp`
+  определены всегда; `length` — float; новые имена методов (`x_at`, `y_at`, `intersection_with_line`,
+  `intersection_with_segment`); `len(line)` убран.
+- `Rectangle` хранит центр, размеры и угол. Конструкторы `from_box()`, `from_xywh()`, `from_points(rotated=...)`.
+  Ширина по точкам — геометрическая (`xmax - xmin`), а не пиксельная, как у `cv2.boundingRect`.
+  Угол нормализуется в `(-45, 45]`; вершины и середины сторон корректны для повёрнутого прямоугольника;
+  `area = width * height`.
+- `Rectangle(rotated=True)` использует OpenCV (`cv2.minAreaRect`), OpenCV — необязательная зависимость (extra `[cv]`).
+  Собственный numpy-порт `_rotcalipers` удалён: расходился с OpenCV 4.5+ и был примерно в 2400 раз медленнее.
+- `Quadrangle(vertices)` принимает ровно 4 вершины в любом порядке; `from_box()` — вместо 2 точек,
+  `from_points()` — крайние точки облака. Площадь — по формуле шнурования.
+- `Triangle(a, b, c)` — произвольный треугольник (`ab`, `bc`, `ca`, `area`, `perimeter`, `centroid`) вместо NamedTuple.
+- `Contour.get_from_coords()` заменён функцией `to_contour()`.
 
 ### Исправлено
 
-- `Line`: `len()`, `list_of_tuples()`, `get_x_on_line()` и `get_y_on_line()` падали с `AttributeError`
-  для линий «не того» направления; `get_x_on_line()` делила на ноль для строго вертикальной линии.
-- `Triangle`: `t_line_len()` и `b_line_len()` возвращали длину стороны `tp–bp`.
-- `Quadrangle`: `IndexError` для фигуры шириной 1 пиксель (округлённый центроид оставлял левую группу пустой);
-  для вырожденного набора точек теперь `ValueError`.
-- `Rectangle.shift()` не пересчитывал `cp`, `contour`, `lcp`, `rcp`, `tcp`, `bcp`.
-- `Rectangle.decrease()` дважды пересчитывал проценты и терял поворот; теперь уменьшает каждую сторону
-  на заданный процент с сохранением центра и угла.
-- `Rectangle.shift_given_angle()` возвращает точный параллельный перенос (без повторного `minAreaRect`).
-- `Point`: `numpy.float32` округлялся отбрасыванием дробной части, а не через `round()`.
+- Ошибки 0.1.x: падения `Line` для линий «не того» направления, деление на ноль, неверные длины сторон `Triangle`,
+  `IndexError` у `Quadrangle` в 1 пиксель, вырожденный ромб, неверная площадь не вписанных четырёхугольников,
+  `Rectangle.shift()` без пересчёта производных точек, неработающий `Rectangle.decrease()`.
 
 ### Добавлено
 
-- `Point`: `__eq__`, `__hash__`, `__repr__`.
-- `Rectangle.rotated`; `Contour` в корне пакета; `__version__`.
-- Полная типизация (mypy `--strict`), тесты на все классы и сверка с OpenCV, CI-workflow с тестами.
-- `.gitattributes`: переводы строк в репозитории — LF.
+- Изменение на месте без выделения памяти, `copy()` у всех фигур, сеттеры `Rectangle.width/height/angle`.
+- `Line.side_of()`, `Line.distance_to_point()`, `Rectangle.contains()`, `bounding_box()`, `to_int_box()`.
+- Модуль `batch`: векторные операции numpy над массивами точек, боксов и отрезков.
+- Типизация mypy `--strict`, ruff, тесты со сверкой с OpenCV, CI-workflow с тестами, `.gitattributes` (LF).
 
 ## [0.1.1] — 2026-03-19
 
@@ -49,6 +55,5 @@
 ### Добавлено
 
 - Пакет `neurogeometry`: `Point`, `Line`, `LineDirection`, `Quadrangle`, `Rectangle`, `Triangle`, `Contour`.
-- `Rectangle` без обязательной зависимости от OpenCV (numpy-порт rotating calipers для `rotated=True`).
 
 [0.2.0]: https://github.com/omigutin/neuro_geometry/releases/tag/v0.2.0
