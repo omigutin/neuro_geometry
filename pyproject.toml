@@ -1,0 +1,62 @@
+[build-system]
+# Версии hatchling ≥1.24 пишут в METADATA поля License-File (PEP 639); `twine check`
+# до полной поддержки может ругаться — сборка и установка wheel при этом корректны.
+requires = ["hatchling>=1.21.0,<1.24"]
+build-backend = "hatchling.build"
+
+[project]
+name = "neurogeometry"
+version = "0.1.1"
+description = "2D geometric primitives (Point, Line, Quadrangle, Rectangle, Triangle) for vision pipelines"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.10"
+authors = [{ name = "NeuroGeometry contributors" }]
+keywords = ["geometry", "computer-vision", "2d"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Typing :: Typed",
+]
+dependencies = [
+  "numpy>=1.23",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=7.4",
+  "build>=1.0.0",
+  "twine>=5.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/kkropachev12/NeuroGeometry"
+Repository = "https://github.com/kkropachev12/NeuroGeometry"
+Changelog = "https://github.com/kkropachev12/NeuroGeometry/blob/main/CHANGELOG.md"
+"Bug Tracker" = "https://github.com/kkropachev12/NeuroGeometry/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/neurogeometry"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+  "/src",
+  "/tests",
+  "/README.md",
+  "/CHANGELOG.md",
+  "/LICENSE",
+  "/NOTICE",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"

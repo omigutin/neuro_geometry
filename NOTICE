@@ -1,0 +1,8 @@
+The NeuroGeometry package is licensed under the MIT License (see LICENSE).
+
+This package includes a Python port of the rotating calipers minimum-area
+rectangle logic from OpenCV (`modules/imgproc/src/rotcalipers.cpp`), originally
+Copyright (C) 2000, Intel Corporation, and contributors to the OpenCV project.
+
+OpenCV is licensed under the Apache License, Version 2.0.
+See: https://github.com/opencv/opencv
