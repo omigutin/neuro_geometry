@@ -1,7 +1,8 @@
 # Валидация
 
 ```bash
-cd NeuroGeometry
 pip install -e ".[dev]"
+ruff check .
+mypy
 pytest -q
 ```

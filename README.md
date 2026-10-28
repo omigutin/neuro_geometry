@@ -1,128 +1,112 @@
-# NeuroGeometry
+# neuro_geometry
 
-2D-геометрия для пайплайнов компьютерного зрения: `Point`, `Line` (+ `LineDirection`), `Quadrangle`, `Rectangle`, `Triangle`.
+2D-геометрия для пайплайнов компьютерного зрения: `Point`, `Line` (+ `LineDirection`), `Quadrangle`, `Rectangle`, `Triangle`, `Contour`.
 
-**Лицензия:** [MIT](LICENSE). Фрагменты логики минимального описанного прямоугольника восходят к OpenCV — см. [NOTICE](NOTICE).
+Координаты — пиксели изображения: ось Y направлена вниз, точки хранятся как `int`.
 
 | | |
 |--|--|
-| **Репозиторий** | https://gitlab.com/matller/NeuroGeometry |
-| **Имя на PyPI** | **`neurogeometry`** |
-| **Страница PyPI** | https://pypi.org/project/neurogeometry/ *(после первой публикации)* |
+| **Репозиторий** | https://github.com/omigutin/neuro_geometry |
+| **Пакет** | `neuro-geometry` (импорт: `neuro_geometry`) |
 | **Changelog** | [CHANGELOG.md](CHANGELOG.md) |
+| **Лицензия** | [MIT](LICENSE) |
 
 ## Установка
 
-С PyPI (после публикации пакета):
-
 ```bash
-pip install neurogeometry
+pip install "neuro-geometry @ git+https://github.com/omigutin/neuro_geometry.git@main"
 ```
 
-Конкретная версия:
+С OpenCV для повёрнутых прямоугольников:
 
 ```bash
-pip install neurogeometry==0.1.1
+pip install "neuro-geometry[cv] @ git+https://github.com/omigutin/neuro_geometry.git@main"
 ```
 
-Зависимости для разработки и сборки:
-
-```bash
-pip install -e ".[dev]"
-```
-
-## Миграция с `pc_geometric_shapes`
-
-В монолите импорты вида `...pc_common.pc_geometric_shapes` или `...pc_geometric_shapes` заменяются на **`neurogeometry`**.
-
-| Было (пример) | Стало |
-|---------------|--------|
-| `from ...pc_common.pc_geometric_shapes import Point` | `from neurogeometry import Point` |
-| `from ..pc_geometric_shapes import Point` | `from neurogeometry import Point` |
-| `from ...pc_common.pc_geometric_shapes import Line` | `from neurogeometry import Line` |
-| `from ...pc_common.pc_geometric_shapes import Rectangle` | `from neurogeometry import Rectangle` |
-| `from ...pc_common.pc_geometric_shapes import Quadrangle` | `from neurogeometry import Quadrangle` |
-| `from ...pc_common.pc_geometric_shapes import Triangle` | `from neurogeometry import Triangle` |
-| `from ...pc_geometric_shapes.gs_line import LineDirection` | `from neurogeometry import LineDirection` |
-| `from ...pc_common.pc_geometric_shapes import Point, Line, Rectangle` | `from neurogeometry import Point, Line, Rectangle` |
-| контур из координат (класс `Contour`) | `from neurogeometry.contour import Contour` |
-
-Количество точек в пути импорта (`...`) зависит от глубины вашего модуля — важно только заменить хвост на `neurogeometry`.
+Обязательная зависимость — только `numpy`. OpenCV нужен лишь для `Rectangle(..., rotated=True)`.
+Extra `[cv]` ставит `opencv-python-headless`. Если в проекте уже есть `opencv-python` или
+`opencv-contrib-python`, extra не нужен: несколько дистрибутивов OpenCV в одном окружении конфликтуют.
 
 ## Пример
 
 ```python
-from neurogeometry import Point, Rectangle, Line, LineDirection
+import numpy as np
+from neuro_geometry import Line, LineDirection, Point, Quadrangle, Rectangle
 
-p = Point(10, 20)
-r = Rectangle([[0, 0, 100, 50]], rotated=False)
+p = Point(10, 20)                      # или Point((10, 20))
+line = Line([[0, 0], [100, 10]])
+assert line.direction == LineDirection.HORIZONTAL
+cross = line.get_intersection_point_with_line_segment((Point(50, -5), Point(50, 20)))
+
+q = Quadrangle([[0, 0], [100, 0], [60, 50], [0, 50]])
+q.area                                 # 4000.0
+
+r = Rectangle([0, 0, 100, 50])         # по осям, как cv2.boundingRect
+contour = np.array([[[10, 10]], [[110, 40]], [[100, 80]], [[0, 50]]], dtype=np.int32)
+rr = Rectangle(contour, rotated=True)  # минимальной площади, как cv2.minAreaRect (нужен OpenCV)
+smaller = rr.decrease(10, 10)
 ```
 
-## Тесты
+## Классы
+
+- **`Point`** — точка с координатами `int`. Дробные значения округляются через `round()`
+  (округление к чётному: `Point(2.5, 0).x == 2`). Поддерживает `+`, `-`, `==`, `hash`.
+- **`Line`** — отрезок из двух точек. Направление `HORIZONTAL`, если `|dx| >= |dy|`, иначе `VERTICAL`.
+  У горизонтального заполнены `lp`/`rp`, у вертикального — `tp`/`bp`; противоположная пара равна `None`.
+  `get_x_on_line`/`get_y_on_line` работают для любого направления и считают по прямой, проходящей через отрезок.
+- **`Quadrangle`** — четырёхугольник `lbp, ltp, rtp, rbp`. Из 2 точек строится прямоугольник по осям,
+  из 3 и более — берутся крайние углы относительно центроида. Площадь — по формуле шнурования.
+- **`Rectangle`** — прямоугольник вокруг контура.
+  - `rotated=False` повторяет `cv2.boundingRect`: границы включительные, `width = xmax - xmin + 1`.
+  - `rotated=True` повторяет `cv2.minAreaRect` + `cv2.boxPoints`. Углы `lbp/ltp/rtp/rbp` берутся в порядке
+    `boxPoints`, поэтому у повёрнутого прямоугольника их имена условны.
+  - `shift()` сдвигает прямоугольник на месте; `shift_given_angle()` и `decrease()` возвращают новый.
+- **`Triangle`** — прямоугольный треугольник `bp, tp, lrp` с вертикальным катетом `tp–bp`.
+- **`Contour.get_from_coords`** — `[[x, y], ...]` → массив OpenCV формы `(N, 1, 2)`, `int32`.
+
+## Миграция с `pc_geometric_shapes` (production_counters) и `neurogeometry`
+
+Хвост пути импорта заменяется на `neuro_geometry`:
+
+| Было | Стало |
+|------|-------|
+| `from ...pc_common.pc_geometric_shapes import Point, Line, Rectangle` | `from neuro_geometry import Point, Line, Rectangle` |
+| `from ...pc_geometric_shapes.gs_line import LineDirection` | `from neuro_geometry import LineDirection` |
+| `from ...pc_common.types import Contour` | `from neuro_geometry import Contour` |
+| `from neurogeometry import ...` | `from neuro_geometry import ...` |
+
+Отличия в поведении от `pc_geometric_shapes` перечислены в [CHANGELOG.md](CHANGELOG.md) (версия 0.2.0).
+Главные для миграции:
+
+- `Quadrangle.area` считается точно по вершинам, а не по формуле Брахмагупты: для не вписанных
+  четырёхугольников значения меняются. Проверьте пороги площади в конфигах.
+- `Triangle.t_line_len()` и `b_line_len()` теперь возвращают длины своих сторон.
+- `Line` не меняет переданный список координат.
+- `Point` сравнивается по координатам (`==`) и хешируется.
+
+## Разработка
 
 ```bash
+pip install -e ".[dev]"
+ruff check .
+mypy
 pytest
 ```
 
-Настройка discovery: `[tool.pytest.ini_options]` в `pyproject.toml` (`testpaths`, `pythonpath = ["src"]`).
+CI ([tests.yml](.github/workflows/tests.yml)) прогоняет ruff, mypy и pytest на Python 3.10–3.12,
+плюс отдельный прогон без OpenCV.
 
-## Сборка дистрибутивов
-
-В `[build-system]` зафиксирован **`hatchling<1.24`**, чтобы метаданные оставались в формате, который проходит **`twine check`** на текущих версиях Twine (поля PEP 639 в METADATA 2.4 пока часто ломают проверку).
+## Сборка и публикация
 
 ```bash
-pip install build
 python -m build
+python -m twine check dist/*
 ```
 
-Артефакты появятся в `dist/`: wheel (`.whl`) и sdist (`.tar.gz`). Проверка содержимого wheel:
+В `[build-system]` зафиксирован `hatchling<1.24`: более новые версии пишут в METADATA поля PEP 639,
+на которых `twine check` пока часто падает.
 
-```bash
-python -m zipfile -l dist/neurogeometry-*.whl
-tar -tzf dist/neurogeometry-*.tar.gz | head
-```
-
-Установка wheel в чистое окружение:
-
-```bash
-python -m venv .venv-build && source .venv-build/bin/activate  # Windows: .venv-build\Scripts\activate
-pip install dist/neurogeometry-0.1.0-py3-none-any.whl
-python -c "from neurogeometry import Point; print(Point(1,2))"
-```
-
-## Публикация на PyPI
-
-**Токены и учётная запись PyPI нужны вам локально; из этого репозитория PyPI автоматически не вызывается.**
-
-### Вариант A: Twine (локально)
-
-1. Обновите версию в `pyproject.toml` (`[project].version`) и запись в [CHANGELOG.md](CHANGELOG.md).
-2. Создайте git-тег `vX.Y.Z` и запушьте его (см. ниже).
-3. Соберите дистрибутивы: `python -m build`.
-4. Загрузка на **PyPI**:
-
-   ```bash
-   python -m twine check dist/*
-   python -m twine upload dist/*
-   ```
-
-   Для **TestPyPI** (рекомендуется сначала):
-
-   ```bash
-   python -m twine upload --repository testpypi dist/*
-   ```
-
-   Учётные данные: API token из настроек https://pypi.org/manage/account/ (или `~/.pypirc`).
-
-### Вариант B: GitHub Actions + Trusted Publishing
-
-1. В [PyPI](https://pypi.org/manage/account/publishing/) добавьте **Trusted Publisher** для репозитория проекта: укажите workflow `.github/workflows/publish-pypi.yml` и environment `pypi` (как в файле workflow).
-2. В GitHub создайте environment **`pypi`** (Settings → Environments) при необходимости с правилами защиты веток.
-3. Создайте **Release** на GitHub с тегом вида `v0.1.0` — workflow соберёт пакет и загрузит на PyPI через OIDC **без** хранения токена в секретах.
-
-Шаблон workflow: [.github/workflows/publish-pypi.yml](.github/workflows/publish-pypi.yml). Ручной запуск `workflow_dispatch` собирает артефакты, но шаг загрузки на PyPI привязан к событию `release: published` — при необходимости измените условие `if:` в job `publish-to-pypi`.
-
-## Структура
-
-- `src/neurogeometry/` — код пакета (src-layout).
-- `tests/` — pytest.
+Публикация на PyPI — через GitHub Release и Trusted Publishing
+([publish-pypi.yml](.github/workflows/publish-pypi.yml)): в настройках PyPI добавьте Trusted Publisher
+для этого репозитория (workflow `publish-pypi.yml`, environment `pypi`), затем создайте Release с тегом `vX.Y.Z`.
+Перед релизом обновите версию в `pyproject.toml`, `src/neuro_geometry/__init__.py` и запись в CHANGELOG.
